@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: po-to-invoice
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: PUPPETEER_CACHE_DIR
+        value: /opt/render/project/src/.cache/puppeteer
+      - key: ANTHROPIC_API_KEY
+        sync: false
