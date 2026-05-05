@@ -1,5 +1,6 @@
 import type { ExtractedPO, LineItem, Party } from "./types";
 import { stateName } from "./states";
+import { COMPANY } from "./company";
 
 const GSTIN_RE = /\b(\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z][0-9A-Z])\b/g;
 const PAN_RE = /\b([A-Z]{5}\d{4}[A-Z])\b/g;
@@ -305,12 +306,212 @@ function parseGeneric(text: string): ExtractedPO {
   return out;
 }
 
+// ---------- Blink Commerce parser ----------
+
+function extractBlinkItems(region: string): LineItem[] {
+  let s = region.replace(/\s+/g, " ");
+  // Repair PDF column-shift artifacts in decimals. Iterate until stable so
+  // patterns like "0 . 0 0" collapse via "0.0 0" → "0.00".
+  for (let k = 0; k < 5; k++) {
+    const before = s;
+    s = s.replace(/(\d)\s*\.\s*(\d)/g, "$1.$2");
+    s = s.replace(/(\d+\.\d)\s+(\d)(?=\s|$)/g, "$1$2");
+    if (s === before) break;
+  }
+  const tokens = s.split(" ").filter(Boolean);
+
+  // Locate serials (1, 2, 3, ...) followed by digit-run that begins the item code.
+  const serialPositions: number[] = [];
+  let nextSerial = 1;
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (tokens[i] === String(nextSerial) && /^\d{4,}$/.test(tokens[i + 1])) {
+      serialPositions.push(i);
+      nextSerial++;
+    }
+  }
+  if (serialPositions.length === 0) return [];
+
+  const items: LineItem[] = [];
+  for (let k = 0; k < serialPositions.length; k++) {
+    const start = serialPositions[k] + 1;
+    const end = k + 1 < serialPositions.length ? serialPositions[k + 1] : tokens.length;
+    const slice = tokens.slice(start, end);
+
+    let idx = 0;
+    const consumeDigits = (target: number): string => {
+      let buf = "";
+      while (idx < slice.length && /^\d+$/.test(slice[idx]) && buf.length < target) {
+        buf += slice[idx];
+        idx++;
+        if (buf.length >= target) break;
+      }
+      return buf;
+    };
+    const itemCode = consumeDigits(8);
+    const hsn = consumeDigits(8);
+    consumeDigits(12); // UPC, discarded
+
+    const descTokens: string[] = [];
+    while (idx < slice.length && !/^\d+\.\d+$/.test(slice[idx])) {
+      descTokens.push(slice[idx]);
+      idx++;
+    }
+
+    // Expected numeric fields (10): basicCost, igst%, cess%, addCess, taxAmt,
+    // landingRate, qty, mrp, margin%, totalAmt
+    const fields: number[] = [];
+    while (idx < slice.length && fields.length < 12) {
+      const t = slice[idx];
+      if (/^\d+(?:\.\d+)?$/.test(t)) fields.push(parseFloat(t));
+      idx++;
+    }
+
+    const basicCost = fields[0] || 0;
+    const igstPct = fields[1] || 0;
+    const qty = Math.round(fields[6] || 0);
+
+    items.push({
+      itemCode,
+      description: descTokens.join(" ").replace(/\s+/g, " ").trim(),
+      hsnCode: hsn,
+      quantity: qty,
+      rate: basicCost,
+      amount: Math.round(basicCost * qty * 100) / 100,
+      taxRate: igstPct,
+    });
+  }
+  return items;
+}
+
+function parseBlink(text: string): ExtractedPO {
+  const out = blankPO();
+  const norm = text.replace(/\r\n/g, "\n");
+
+  // Top-level fields
+  const poNum = norm.match(/P\.?\s*O\.?\s*Number\s*:\s*([A-Za-z0-9-]+)/i);
+  if (poNum) out.poNumber = poNum[1].trim();
+
+  const dateMatch = norm.match(/(?:^|\n)\s*Date\s*:\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i);
+  if (dateMatch) out.poDate = parseTextDate(dateMatch[1]);
+
+  const delivMatch = norm.match(/PO\s+delivery\s+date\s*:\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i);
+  if (delivMatch) out.deliveryDate = parseTextDate(delivMatch[1]);
+
+  const ptMatch = norm.match(/Payment\s+Terms\s*:\s*([^\n]+)/i);
+  if (ptMatch) out.paymentTerms = ptMatch[1].trim();
+
+  // Vendor — pull name + GSTIN; address comes from COMPANY static below.
+  const vendorMatch = norm.match(/Vendor\s*:\s*([^\n]+)/i);
+  if (vendorMatch) out.vendor.name = vendorMatch[1].trim();
+
+  // The PO has two GSTINs: vendor's appears before "Delivered To", buyer's after.
+  const deliveredToIdx = norm.search(/Delivered\s*\n?\s*To\s*:/i);
+  const beforeDelivered = deliveredToIdx > 0 ? norm.slice(0, deliveredToIdx) : norm;
+  const afterDelivered = deliveredToIdx > 0 ? norm.slice(deliveredToIdx) : "";
+
+  const vendorGstin = beforeDelivered.match(GSTIN_RE);
+  if (vendorGstin && vendorGstin[0]) applyGstin(out.vendor, vendorGstin[0]);
+
+  // Buyer / ship-to from "Delivered To :" block.
+  const buyerNameMatch = norm.match(/Purchase\s+Order\s*\n+\s*([^\n]+)/i);
+  if (buyerNameMatch) out.buyer.name = buyerNameMatch[1].trim();
+
+  // "Delivered\nTo : <NAME>\n<ADDR LINES>\nGST No. : <GSTIN>"
+  if (afterDelivered) {
+    const block = afterDelivered.match(
+      /Delivered\s*\n?\s*To\s*:\s*([^\n]*)\n([\s\S]*?)(?:GST\s*No\.?\s*:|Reference\s*:)/i,
+    );
+    if (block) {
+      const shipName = block[1].trim();
+      const shipAddr = block[2]
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join("\n");
+      out.shipTo.name = shipName || out.buyer.name;
+      out.shipTo.address = shipAddr;
+      // Buyer bill-to mirrors ship-to in Blink POs (no separate billing block).
+      if (!out.buyer.name) out.buyer.name = out.shipTo.name;
+      out.buyer.address = shipAddr;
+    }
+    const buyerGstin = afterDelivered.match(GSTIN_RE);
+    if (buyerGstin && buyerGstin[0]) {
+      applyGstin(out.buyer, buyerGstin[0]);
+      applyGstin(out.shipTo, buyerGstin[0]);
+    }
+  }
+
+  // Items
+  const itemsRegion = sliceBetween(norm, /#\s*Item[\s\S]*?Total\s*\n?\s*Amt/i, /Total\s+Quantity\s*:/i);
+  if (itemsRegion) out.items = extractBlinkItems(itemsRegion);
+
+  // Totals
+  const netMatch = norm.match(/Net\s+amount\s+([\d,]+\.\d{2})/i);
+  const totalMatch = norm.match(/Total\s+Amount\s+([\d,]+\.\d{2})/i);
+  if (netMatch) out.total = toNum(netMatch[1]);
+  else if (totalMatch) out.total = toNum(totalMatch[1]);
+
+  // Derive taxable from item rows if parsed, else back-solve from total at line-rate or 18%.
+  const itemTaxRate = out.items.find((it) => (it.taxRate || 0) > 0)?.taxRate || 18;
+  const itemsTaxable = out.items.reduce((s, it) => s + (it.amount || 0), 0);
+  if (itemsTaxable > 0) {
+    out.taxableValue = Math.round(itemsTaxable * 100) / 100;
+  } else if (out.total > 0) {
+    out.taxableValue = Math.round((out.total / (1 + itemTaxRate / 100)) * 100) / 100;
+  }
+
+  // Compute tax strictly as rate% of taxable value; any per-unit-rounding gap
+  // in the PO falls into Round Off so the GST invoice math stays clean.
+  const tax = Math.round(out.taxableValue * (itemTaxRate / 100) * 100) / 100;
+
+  const isInter =
+    out.vendor.stateCode && out.buyer.stateCode && out.vendor.stateCode !== out.buyer.stateCode;
+  if (isInter) {
+    out.igstRate = itemTaxRate;
+    out.igstAmount = tax;
+  } else {
+    out.cgstRate = itemTaxRate / 2;
+    out.sgstRate = itemTaxRate / 2;
+    out.cgstAmount = Math.round((tax / 2) * 100) / 100;
+    out.sgstAmount = Math.round((tax - out.cgstAmount) * 100) / 100;
+  }
+
+  out.roundOff = out.total
+    ? Math.round((out.total - out.taxableValue - tax) * 100) / 100
+    : 0;
+
+  return out;
+}
+
 // ---------- Entry point: auto-detect format ----------
+
+function hydrateClapstoreVendor(po: ExtractedPO): ExtractedPO {
+  // If the PO's vendor is Clapstore, fill in canonical address + GSTIN from COMPANY.
+  const isClapstore =
+    /clapstore/i.test(po.vendor.name || "") ||
+    po.vendor.pan === COMPANY.pan ||
+    po.vendor.gstin === COMPANY.gstin;
+  if (isClapstore) {
+    po.vendor = {
+      ...po.vendor,
+      name: COMPANY.name,
+      address: po.vendor.address || COMPANY.address,
+      gstin: COMPANY.gstin,
+      pan: COMPANY.pan,
+      stateName: COMPANY.stateName,
+      stateCode: COMPANY.stateCode,
+    };
+  }
+  return po;
+}
 
 export function parsePOText(text: string): ExtractedPO {
   if (!text) return blankPO();
   if (/Vendor\s+Name\s*:/i.test(text) && /PO\s*No\s*:/i.test(text) && /Grand\s+Total/i.test(text)) {
-    return parseMBL(text);
+    return hydrateClapstoreVendor(parseMBL(text));
   }
-  return parseGeneric(text);
+  if (/BLINK\s+COMMERCE/i.test(text) && /Delivered\s*\n?\s*To\s*:/i.test(text)) {
+    return hydrateClapstoreVendor(parseBlink(text));
+  }
+  return hydrateClapstoreVendor(parseGeneric(text));
 }

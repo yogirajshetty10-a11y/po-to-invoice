@@ -13,3 +13,7 @@ services:
         value: /opt/render/project/src/.cache/puppeteer
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: BASIC_AUTH_USER
+        sync: false
+      - key: BASIC_AUTH_PASS
+        sync: false

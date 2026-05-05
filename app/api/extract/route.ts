@@ -23,25 +23,28 @@ export async function POST(req: NextRequest) {
     parser = new PDFParse({ data: bytes });
     const result = await parser.getText();
     const data = parsePOText(result.text);
-    try {
-      const dbgPath = join(process.cwd(), "debug-po.txt");
-      const summary = JSON.stringify(
-        {
-          poNumber: data.poNumber,
-          vendorName: data.vendor.name,
-          buyerName: data.buyer.name,
-          itemCount: data.items.length,
-          taxableValue: data.taxableValue,
-          total: data.total,
-        },
-        null,
-        2,
-      );
-      await writeFile(dbgPath, `===== PARSED SUMMARY =====\n${summary}\n\n===== RAW PO TEXT =====\n${result.text}`, "utf8");
-      console.log("Wrote debug dump to", dbgPath);
-    } catch (e) {
-      console.error("Failed to write debug-po.txt:", e);
+
+    if (process.env.PO_DEBUG_DUMP === "1") {
+      try {
+        const dbgPath = join(process.cwd(), "debug-po.txt");
+        const summary = JSON.stringify(
+          {
+            poNumber: data.poNumber,
+            vendorName: data.vendor.name,
+            buyerName: data.buyer.name,
+            itemCount: data.items.length,
+            taxableValue: data.taxableValue,
+            total: data.total,
+          },
+          null,
+          2,
+        );
+        await writeFile(dbgPath, `===== PARSED SUMMARY =====\n${summary}\n\n===== RAW PO TEXT =====\n${result.text}`, "utf8");
+      } catch (e) {
+        console.error("Failed to write debug-po.txt:", e);
+      }
     }
+
     return NextResponse.json({ data });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Parsing failed";
