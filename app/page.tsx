@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ExtractedPO, Invoice, LineItem } from "@/lib/types";
+import { buildInvoiceHtml } from "@/lib/invoiceHtml";
 
 const blankPO: ExtractedPO = {
   poNumber: "",
@@ -91,33 +92,26 @@ export default function Page() {
     }
   }
 
-  async function downloadInvoice() {
+  function downloadInvoice() {
     setError(null);
-    const res = await fetch("/api/invoice", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(invoice),
-    });
-    if (!res.ok) {
-      const txt = await res.text();
-      let msg = `PDF generation failed (${res.status}): `;
-      try {
-        const j = JSON.parse(txt);
-        msg += j.error || txt.slice(0, 300);
-      } catch {
-        msg += txt.slice(0, 300);
+    try {
+      const html = buildInvoiceHtml(invoice);
+      const docTitle = `invoice-${invoice.invoiceNumber || "draft"}`;
+      const printable = html.replace(
+        "</head>",
+        `<title>${docTitle}</title><script>window.onload=function(){setTimeout(function(){window.print();},150);};window.onafterprint=function(){window.close();};</script></head>`,
+      );
+      const win = window.open("", "_blank");
+      if (!win) {
+        setError("Popup blocked. Allow popups for this site, then click Generate PDF again.");
+        return;
       }
-      setError(msg);
-      console.error("Invoice POST failed:", txt);
-      return;
+      win.document.open();
+      win.document.write(printable);
+      win.document.close();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open invoice");
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `invoice-${invoice.invoiceNumber || "draft"}.pdf`;
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   function recalcTotals(items: LineItem[], igst: number, cgst: number, sgst: number, cess: number, roundOff: number) {
