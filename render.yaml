@@ -9,8 +9,6 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "20"
-      - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/project/src/.cache/puppeteer
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: BASIC_AUTH_USER

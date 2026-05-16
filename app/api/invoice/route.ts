@@ -1,10 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-core";
+import chromium from "@sparticuz/chromium";
 import type { Invoice } from "@/lib/types";
 import { buildInvoiceHtml } from "@/lib/invoiceHtml";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+async function launchBrowser() {
+  const isProd = !!process.env.RENDER || process.env.NODE_ENV === "production";
+  if (isProd) {
+    return puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+    });
+  }
+  // Local dev: use whatever Chrome is installed on the machine.
+  const localPath =
+    process.env.PUPPETEER_EXECUTABLE_PATH ||
+    (process.platform === "win32"
+      ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      : process.platform === "darwin"
+        ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        : "/usr/bin/google-chrome");
+  return puppeteer.launch({
+    headless: true,
+    executablePath: localPath,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+}
 
 export async function POST(req: NextRequest) {
   let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
@@ -12,10 +38,7 @@ export async function POST(req: NextRequest) {
     const inv = (await req.json()) as Invoice;
     const html = buildInvoiceHtml(inv);
 
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    browser = await launchBrowser();
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
     const pdf = await page.pdf({
