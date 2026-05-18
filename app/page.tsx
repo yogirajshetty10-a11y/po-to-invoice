@@ -97,10 +97,35 @@ export default function Page() {
     try {
       const html = buildInvoiceHtml(invoice);
       const docTitle = `invoice-${invoice.invoiceNumber || "draft"}`;
-      const printable = html.replace(
-        "</head>",
-        `<title>${docTitle}</title><script>window.onload=function(){setTimeout(function(){window.print();},150);};window.onafterprint=function(){window.close();};</script></head>`,
-      );
+      const headInject = `<title>${docTitle}</title>
+<style>
+  @media screen {
+    body { margin: 0; }
+    .print-bar {
+      position: sticky; top: 0; z-index: 9999;
+      display: flex; gap: 12px; align-items: center; justify-content: center;
+      padding: 10px 16px; background: #111; color: #fff;
+      font: 14px/1.4 system-ui, sans-serif;
+    }
+    .print-bar button {
+      background: #2563eb; color: #fff; border: 0;
+      padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;
+    }
+    .print-bar button:hover { background: #1d4ed8; }
+    .print-bar span { opacity: 0.85; }
+  }
+  @media print { .print-bar { display: none !important; } }
+</style>
+<script>
+  function doPrint(){ window.print(); }
+  window.addEventListener('load', function(){ setTimeout(doPrint, 500); });
+</script>`;
+      const bar = `<div class="print-bar">
+  <span>Use <b>Save as PDF</b> in the print dialog.</span>
+  <button onclick="doPrint()">Open Print / Save as PDF</button>
+</div>`;
+      let printable = html.replace("</head>", headInject + "</head>");
+      printable = printable.replace("<body>", "<body>" + bar);
       const win = window.open("", "_blank");
       if (!win) {
         setError("Popup blocked. Allow popups for this site, then click Generate PDF again.");
