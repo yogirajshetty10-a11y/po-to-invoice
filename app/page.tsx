@@ -142,50 +142,62 @@ export default function Page() {
     }
   }
 
-  function downloadInvoice() {
+  const [generating, setGenerating] = useState(false);
+
+  async function downloadInvoice() {
     setError(null);
+    setGenerating(true);
+    let iframe: HTMLIFrameElement | null = null;
     try {
       const html = buildInvoiceHtml(invoice);
-      const docTitle = `invoice-${invoice.invoiceNumber || "draft"}`;
-      const headInject = `<title>${docTitle}</title>
-<style>
-  @media screen {
-    body { margin: 0; }
-    .print-bar {
-      position: sticky; top: 0; z-index: 9999;
-      display: flex; gap: 12px; align-items: center; justify-content: center;
-      padding: 10px 16px; background: #111; color: #fff;
-      font: 14px/1.4 system-ui, sans-serif;
-    }
-    .print-bar button {
-      background: #2563eb; color: #fff; border: 0;
-      padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;
-    }
-    .print-bar button:hover { background: #1d4ed8; }
-    .print-bar span { opacity: 0.85; }
-  }
-  @media print { .print-bar { display: none !important; } }
-</style>
-<script>
-  function doPrint(){ window.print(); }
-  window.addEventListener('load', function(){ setTimeout(doPrint, 500); });
-</script>`;
-      const bar = `<div class="print-bar">
-  <span>Use <b>Save as PDF</b> in the print dialog.</span>
-  <button onclick="doPrint()">Open Print / Save as PDF</button>
-</div>`;
-      let printable = html.replace("</head>", headInject + "</head>");
-      printable = printable.replace("<body>", "<body>" + bar);
-      const win = window.open("", "_blank");
-      if (!win) {
-        setError("Popup blocked. Allow popups for this site, then click Generate PDF again.");
-        return;
+      const filename = `invoice-${invoice.invoiceNumber || "draft"}.pdf`;
+
+      // Render the invoice into an isolated, offscreen iframe so its print CSS
+      // never touches the app UI, then rasterize that document straight to a
+      // downloadable PDF — no print dialog, no server-side Chromium.
+      iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.left = "-10000px";
+      iframe.style.top = "0";
+      iframe.style.width = "794px"; // A4 width @ 96dpi
+      iframe.style.height = "1123px"; // A4 height @ 96dpi
+      iframe.style.border = "0";
+      document.body.appendChild(iframe);
+
+      const idoc = iframe.contentWindow!.document;
+      idoc.open();
+      idoc.write(html);
+      idoc.close();
+
+      // Wait for the iframe document + fonts to settle before capturing.
+      await new Promise<void>((resolve) => {
+        if (idoc.readyState === "complete") resolve();
+        else iframe!.onload = () => resolve();
+      });
+      try {
+        await (idoc as Document & { fonts?: { ready: Promise<unknown> } }).fonts?.ready;
+      } catch {
+        /* fonts API optional */
       }
-      win.document.open();
-      win.document.write(printable);
-      win.document.close();
+      await new Promise((r) => setTimeout(r, 200));
+
+      const html2pdf = (await import("html2pdf.js")).default;
+      await html2pdf()
+        .set({
+          margin: [10, 8, 10, 8], // mm — mirrors the invoice's @page 10mm
+          filename,
+          image: { type: "jpeg", quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["css", "legacy"] },
+        })
+        .from(idoc.body)
+        .save();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open invoice");
+      setError(e instanceof Error ? e.message : "Could not generate the PDF");
+    } finally {
+      if (iframe) iframe.remove();
+      setGenerating(false);
     }
   }
 
@@ -437,8 +449,8 @@ export default function Page() {
             >
               ← Start Over
             </button>
-            <button onClick={downloadInvoice} className="btn btn-primary">
-              Generate PDF
+            <button onClick={downloadInvoice} className="btn btn-primary" disabled={generating}>
+              {generating ? "Generating…" : "Generate & Download PDF"}
             </button>
           </div>
         </div>
