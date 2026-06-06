@@ -1,18 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
 
 :root {
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
   --accent-primary: #6366f1;
   --accent-hover: #4f46e5;
-  --accent-glow: rgba(99, 102, 241, 0.4);
-  --border-color: #334155;
-  --error-bg: rgba(239, 68, 68, 0.1);
-  --error-text: #ef4444;
-  --glass-bg: rgba(30, 41, 59, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.1);
+  --accent-glow: rgba(99, 102, 241, 0.25);
+  --border-color: #e2e8f0;
+  --error-bg: rgba(239, 68, 68, 0.08);
+  --error-text: #dc2626;
+  --glass-bg: #ffffff;
+  --glass-border: #e2e8f0;
 }
 
 * {
@@ -23,8 +23,7 @@
 
 body {
   font-family: 'Outfit', sans-serif;
-  background: radial-gradient(circle at top right, var(--bg-secondary) 0%, var(--bg-primary) 100%);
-  background-attachment: fixed;
+  background: #ffffff;
   color: var(--text-primary);
   min-height: 100vh;
   line-height: 1.5;
@@ -76,18 +75,17 @@ body {
 
 .card {
   background: var(--glass-bg);
-  backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
   border-radius: 16px;
   padding: 1.5rem;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 4px 16px rgba(15, 23, 42, 0.04);
   margin-bottom: 1.5rem;
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
 .card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1), 0 8px 28px rgba(15, 23, 42, 0.06);
 }
 
 .card-title {
@@ -154,7 +152,7 @@ body {
 
 .form-input, .form-textarea {
   width: 100%;
-  background: rgba(15, 23, 42, 0.6);
+  background: #ffffff;
   border: 1px solid var(--border-color);
   color: var(--text-primary);
   border-radius: 8px;
@@ -175,7 +173,7 @@ body {
 }
 
 .form-input[readonly] {
-  background: rgba(15, 23, 42, 0.3);
+  background: #f1f5f9;
   color: var(--text-secondary);
 }
 
@@ -212,7 +210,7 @@ body {
 }
 
 .btn-secondary:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 23, 42, 0.04);
   border-color: var(--text-secondary);
 }
 
@@ -223,7 +221,7 @@ body {
 
 .btn-ghost:hover {
   color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 23, 42, 0.04);
 }
 
 .btn-danger {

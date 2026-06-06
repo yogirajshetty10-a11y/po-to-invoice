@@ -308,7 +308,7 @@ function parseGeneric(text: string): ExtractedPO {
 
 // ---------- Blink Commerce parser ----------
 
-function extractBlinkItems(region: string): LineItem[] {
+function extractBlinkItems(region: string, isInter: boolean): LineItem[] {
   let s = region.replace(/\s+/g, " ");
   // Repair PDF column-shift artifacts in decimals. Iterate until stable so
   // patterns like "0 . 0 0" collapse via "0.0 0" → "0.00".
@@ -357,18 +357,26 @@ function extractBlinkItems(region: string): LineItem[] {
       idx++;
     }
 
-    // Expected numeric fields (10): basicCost, igst%, cess%, addCess, taxAmt,
-    // landingRate, qty, mrp, margin%, totalAmt
+    // Numeric fields, front-anchored. Layout from the left is stable:
+    //   basicCost, <rate cols>, cess%, addCess, taxAmt, landingRate, qty, mrp, margin%, totalAmt
+    // The rate-column count is the only variable: inter-state POs carry one
+    // IGST% column, intra-state POs carry two (CGST% + SGST%). We anchor from the
+    // FRONT (not the end) because PDF extraction sometimes splits the trailing
+    // total (e.g. "36315.00" → "3631" + "5.00"), which would shift end-relative
+    // indices. qty therefore sits at index (rateCols + 5):
+    //   0:basicCost  1..rateCols:tax%  +1:cess%  +1:addCess  +1:taxAmt  +1:landing  → qty
     const fields: number[] = [];
-    while (idx < slice.length && fields.length < 12) {
+    while (idx < slice.length && fields.length < 14) {
       const t = slice[idx];
       if (/^\d+(?:\.\d+)?$/.test(t)) fields.push(parseFloat(t));
       idx++;
     }
 
     const basicCost = fields[0] || 0;
-    const igstPct = fields[1] || 0;
-    const qty = Math.round(fields[6] || 0);
+    const rateCols = isInter ? 1 : 2;
+    let taxRate = 0;
+    for (let r = 1; r <= rateCols && r < fields.length; r++) taxRate += fields[r] || 0;
+    const qty = Math.round(fields[rateCols + 5] || 0);
 
     items.push({
       itemCode,
@@ -377,7 +385,7 @@ function extractBlinkItems(region: string): LineItem[] {
       quantity: qty,
       rate: basicCost,
       amount: Math.round(basicCost * qty * 100) / 100,
-      taxRate: igstPct,
+      taxRate,
     });
   }
   return items;
@@ -441,9 +449,12 @@ function parseBlink(text: string): ExtractedPO {
     }
   }
 
-  // Items
+  // Items — inter vs intra-state decides the tax-column layout (IGST vs CGST+SGST),
+  // so resolve it from the now-applied GSTINs before tokenizing the rows.
+  const isInterState =
+    !!out.vendor.stateCode && !!out.buyer.stateCode && out.vendor.stateCode !== out.buyer.stateCode;
   const itemsRegion = sliceBetween(norm, /#\s*Item[\s\S]*?Total\s*\n?\s*Amt/i, /Total\s+Quantity\s*:/i);
-  if (itemsRegion) out.items = extractBlinkItems(itemsRegion);
+  if (itemsRegion) out.items = extractBlinkItems(itemsRegion, isInterState);
 
   // Totals
   const netMatch = norm.match(/Net\s+amount\s+([\d,]+\.\d{2})/i);

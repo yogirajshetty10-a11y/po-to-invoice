@@ -34,9 +34,57 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+
+// Is this an inter-state (IGST) invoice vs intra-state (CGST+SGST)?
+function isInterState(inv: Invoice): boolean {
+  return (inv.igstRate || 0) > 0 || ((inv.igstAmount || 0) > 0 && !(inv.cgstAmount || 0) && !(inv.sgstAmount || 0));
+}
+
+// Fill in % rates from amounts when the parser only gave amounts (generic POs),
+// so auto-calculate has rates to work from.
+function seedRates(inv: Invoice): Invoice {
+  const tv = inv.taxableValue || 0;
+  if (tv <= 0) return inv;
+  const out = { ...inv };
+  if (!out.igstRate && out.igstAmount) out.igstRate = round2((out.igstAmount / tv) * 100);
+  if (!out.cgstRate && out.cgstAmount) out.cgstRate = round2((out.cgstAmount / tv) * 100);
+  if (!out.sgstRate && out.sgstAmount) out.sgstRate = round2((out.sgstAmount / tv) * 100);
+  if (!out.cessRate && out.cessAmount) out.cessRate = round2((out.cessAmount / tv) * 100);
+  return out;
+}
+
+// Recompute every derived figure from quantities, rates and tax %.
+// Grand total is rounded to the nearest rupee and the gap booked to Round Off.
+function recompute(inv: Invoice): Invoice {
+  const items = inv.items.map((it) => ({
+    ...it,
+    amount: round2((Number(it.quantity) || 0) * (Number(it.rate) || 0)),
+  }));
+  const taxableValue = round2(items.reduce((s, i) => s + i.amount, 0));
+
+  let igstAmount = 0;
+  let cgstAmount = 0;
+  let sgstAmount = 0;
+  if (isInterState(inv)) {
+    igstAmount = round2(taxableValue * ((inv.igstRate || 0) / 100));
+  } else {
+    cgstAmount = round2(taxableValue * ((inv.cgstRate || 0) / 100));
+    sgstAmount = round2(taxableValue * ((inv.sgstRate || 0) / 100));
+  }
+  const cessAmount = round2(taxableValue * ((inv.cessRate || 0) / 100));
+
+  const preRound = taxableValue + igstAmount + cgstAmount + sgstAmount + cessAmount;
+  const total = Math.round(preRound);
+  const roundOff = round2(total - preRound);
+
+  return { ...inv, items, taxableValue, igstAmount, cgstAmount, sgstAmount, cessAmount, roundOff, total };
+}
+
 export default function Page() {
   const [stage, setStage] = useState<"upload" | "loading" | "edit">("upload");
   const [error, setError] = useState<string | null>(null);
+  const [autoCalc, setAutoCalc] = useState(true);
   const [invoice, setInvoice] = useState<Invoice>({
     ...blankPO,
     invoiceNumber: "",
@@ -69,22 +117,24 @@ export default function Page() {
       }
       if (!res.ok) throw new Error(json.error || "Extraction failed");
       const po = json.data as ExtractedPO;
-      setInvoice({
-        ...blankPO,
-        ...po,
-        invoiceNumber: po.poNumber ? `INV-${po.poNumber}` : `INV-${Date.now().toString().slice(-6)}`,
-        invoiceDate: todayISO(),
-        buyersOrderNo: po.poNumber || "",
-        buyersOrderDate: po.poDate || "",
-        dispatchDocNo: "",
-        dispatchedThrough: "",
-        destination: "",
-        termsOfDelivery: po.paymentTerms || "",
-        modeOfPayment: "",
-        deliveryNoteNo: "",
-        deliveryNoteDate: "",
-        otherReferences: po.reference || "",
-      });
+      setInvoice(
+        seedRates({
+          ...blankPO,
+          ...po,
+          invoiceNumber: po.poNumber ? `INV-${po.poNumber}` : `INV-${Date.now().toString().slice(-6)}`,
+          invoiceDate: todayISO(),
+          buyersOrderNo: po.poNumber || "",
+          buyersOrderDate: po.poDate || "",
+          dispatchDocNo: "",
+          dispatchedThrough: "",
+          destination: "",
+          termsOfDelivery: po.paymentTerms || "",
+          modeOfPayment: "",
+          deliveryNoteNo: "",
+          deliveryNoteDate: "",
+          otherReferences: po.reference || "",
+        }),
+      );
       setStage("edit");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -150,27 +200,42 @@ export default function Page() {
       const items = inv.items.map((it, i) => {
         if (i !== idx) return it;
         const next = { ...it, ...patch };
-        next.amount = (Number(next.quantity) || 0) * (Number(next.rate) || 0);
+        next.amount = round2((Number(next.quantity) || 0) * (Number(next.rate) || 0));
         return next;
       });
+      const draft = { ...inv, items };
+      if (autoCalc) return recompute(draft);
       const { taxableValue, total } = recalcTotals(items, inv.igstAmount, inv.cgstAmount, inv.sgstAmount, inv.cessAmount, inv.roundOff);
-      return { ...inv, items, taxableValue, total };
+      return { ...draft, taxableValue, total };
     });
   }
 
   function addItem() {
-    setInvoice((inv) => ({
-      ...inv,
-      items: [...inv.items, { description: "", quantity: 1, rate: 0, amount: 0 }],
-    }));
+    setInvoice((inv) => {
+      const draft = { ...inv, items: [...inv.items, { description: "", quantity: 1, rate: 0, amount: 0 }] };
+      return autoCalc ? recompute(draft) : draft;
+    });
   }
 
   function removeItem(idx: number) {
     setInvoice((inv) => {
       const items = inv.items.filter((_, i) => i !== idx);
+      const draft = { ...inv, items };
+      if (autoCalc) return recompute(draft);
       const { taxableValue, total } = recalcTotals(items, inv.igstAmount, inv.cgstAmount, inv.sgstAmount, inv.cessAmount, inv.roundOff);
-      return { ...inv, items, taxableValue, total };
+      return { ...draft, taxableValue, total };
     });
+  }
+
+  // Toggle auto-calc; when turning it on, immediately reconcile all derived figures.
+  function toggleAutoCalc(on: boolean) {
+    setAutoCalc(on);
+    if (on) setInvoice((inv) => recompute(inv));
+  }
+
+  // Update a tax % rate and (in auto-calc) recompute amounts/total from it.
+  function updateRate(field: "igstRate" | "cgstRate" | "sgstRate", value: number) {
+    setInvoice((inv) => recompute({ ...inv, [field]: value }));
   }
 
   return (
@@ -281,46 +346,74 @@ export default function Page() {
           </div>
 
           <div className="card">
-            <h2 className="card-title">Totals</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <Field label="Taxable Value (Subtotal)" type="number" value={String(invoice.taxableValue)} onChange={(v) => setInvoice({ ...invoice, taxableValue: Number(v) })} readOnly />
-              <Field
-                label="IGST Amount"
-                type="number"
-                value={String(invoice.igstAmount)}
-                onChange={(v) => {
-                  const igst = Number(v);
-                  const { total } = recalcTotals(invoice.items, igst, invoice.cgstAmount, invoice.sgstAmount, invoice.cessAmount, invoice.roundOff);
-                  setInvoice({ ...invoice, igstAmount: igst, total });
-                }}
-              />
-              <Field
-                label="CGST Amount"
-                type="number"
-                value={String(invoice.cgstAmount)}
-                onChange={(v) => {
-                  const cgst = Number(v);
-                  const { total } = recalcTotals(invoice.items, invoice.igstAmount, cgst, invoice.sgstAmount, invoice.cessAmount, invoice.roundOff);
-                  setInvoice({ ...invoice, cgstAmount: cgst, total });
-                }}
-              />
-              <Field
-                label="SGST Amount"
-                type="number"
-                value={String(invoice.sgstAmount)}
-                onChange={(v) => {
-                  const sgst = Number(v);
-                  const { total } = recalcTotals(invoice.items, invoice.igstAmount, invoice.cgstAmount, sgst, invoice.cessAmount, invoice.roundOff);
-                  setInvoice({ ...invoice, sgstAmount: sgst, total });
-                }}
-              />
-              <Field label="Round Off" type="number" value={String(invoice.roundOff)} onChange={(v) => {
-                  const roundOff = Number(v);
-                  const { total } = recalcTotals(invoice.items, invoice.igstAmount, invoice.cgstAmount, invoice.sgstAmount, invoice.cessAmount, roundOff);
-                  setInvoice({ ...invoice, roundOff, total });
-                }} />
-              <Field label="Total" type="number" value={String(invoice.total)} onChange={(v) => setInvoice({ ...invoice, total: Number(v) })} readOnly />
+            <div className="flex justify-between items-center" style={{ marginBottom: 12 }}>
+              <h2 className="card-title" style={{ margin: 0 }}>Totals</h2>
+              <label className="flex items-center gap-2" style={{ cursor: "pointer", fontSize: 14 }}>
+                <input type="checkbox" checked={autoCalc} onChange={(e) => toggleAutoCalc(e.target.checked)} />
+                Auto-calculate from Qty × Rate
+              </label>
             </div>
+
+            {autoCalc ? (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Taxable Value (Subtotal)" type="number" value={String(invoice.taxableValue)} onChange={() => {}} readOnly />
+                {isInterState(invoice) ? (
+                  <>
+                    <Field label="IGST %" type="number" value={String(invoice.igstRate)} onChange={(v) => updateRate("igstRate", Number(v))} />
+                    <Field label="IGST Amount" type="number" value={String(invoice.igstAmount)} onChange={() => {}} readOnly />
+                  </>
+                ) : (
+                  <>
+                    <Field label="CGST %" type="number" value={String(invoice.cgstRate)} onChange={(v) => updateRate("cgstRate", Number(v))} />
+                    <Field label="SGST %" type="number" value={String(invoice.sgstRate)} onChange={(v) => updateRate("sgstRate", Number(v))} />
+                    <Field label="CGST Amount" type="number" value={String(invoice.cgstAmount)} onChange={() => {}} readOnly />
+                    <Field label="SGST Amount" type="number" value={String(invoice.sgstAmount)} onChange={() => {}} readOnly />
+                  </>
+                )}
+                <Field label="Round Off (auto)" type="number" value={String(invoice.roundOff)} onChange={() => {}} readOnly />
+                <Field label="Total" type="number" value={String(invoice.total)} onChange={() => {}} readOnly />
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Taxable Value (Subtotal)" type="number" value={String(invoice.taxableValue)} onChange={(v) => setInvoice({ ...invoice, taxableValue: Number(v) })} readOnly />
+                <Field
+                  label="IGST Amount"
+                  type="number"
+                  value={String(invoice.igstAmount)}
+                  onChange={(v) => {
+                    const igst = Number(v);
+                    const { total } = recalcTotals(invoice.items, igst, invoice.cgstAmount, invoice.sgstAmount, invoice.cessAmount, invoice.roundOff);
+                    setInvoice({ ...invoice, igstAmount: igst, total });
+                  }}
+                />
+                <Field
+                  label="CGST Amount"
+                  type="number"
+                  value={String(invoice.cgstAmount)}
+                  onChange={(v) => {
+                    const cgst = Number(v);
+                    const { total } = recalcTotals(invoice.items, invoice.igstAmount, cgst, invoice.sgstAmount, invoice.cessAmount, invoice.roundOff);
+                    setInvoice({ ...invoice, cgstAmount: cgst, total });
+                  }}
+                />
+                <Field
+                  label="SGST Amount"
+                  type="number"
+                  value={String(invoice.sgstAmount)}
+                  onChange={(v) => {
+                    const sgst = Number(v);
+                    const { total } = recalcTotals(invoice.items, invoice.igstAmount, invoice.cgstAmount, sgst, invoice.cessAmount, invoice.roundOff);
+                    setInvoice({ ...invoice, sgstAmount: sgst, total });
+                  }}
+                />
+                <Field label="Round Off" type="number" value={String(invoice.roundOff)} onChange={(v) => {
+                    const roundOff = Number(v);
+                    const { total } = recalcTotals(invoice.items, invoice.igstAmount, invoice.cgstAmount, invoice.sgstAmount, invoice.cessAmount, roundOff);
+                    setInvoice({ ...invoice, roundOff, total });
+                  }} />
+                <Field label="Total" type="number" value={String(invoice.total)} onChange={(v) => setInvoice({ ...invoice, total: Number(v) })} readOnly />
+              </div>
+            )}
           </div>
 
           <div className="card">
