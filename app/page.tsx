@@ -150,17 +150,18 @@ export default function Page() {
     let iframe: HTMLIFrameElement | null = null;
     try {
       const html = buildInvoiceHtml(invoice);
-      const filename = `invoice-${invoice.invoiceNumber || "draft"}.pdf`;
 
-      // Render the invoice into an isolated, offscreen iframe so its print CSS
-      // never touches the app UI, then rasterize that document straight to a
-      // downloadable PDF — no print dialog, no server-side Chromium.
+      // Render the invoice into an isolated, offscreen iframe and print it with
+      // the browser's native engine. This produces a PDF with REAL, selectable
+      // text (not a flattened image) and renders the invoice CSS exactly as the
+      // Tally layout is designed — the user picks "Save as PDF" in the dialog.
+      // No html2canvas rasterization, no server-side Chromium.
       iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
-      iframe.style.left = "-10000px";
-      iframe.style.top = "0";
-      iframe.style.width = "794px"; // A4 width @ 96dpi
-      iframe.style.height = "1123px"; // A4 height @ 96dpi
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
       iframe.style.border = "0";
       document.body.appendChild(iframe);
 
@@ -169,7 +170,7 @@ export default function Page() {
       idoc.write(html);
       idoc.close();
 
-      // Wait for the iframe document + fonts to settle before capturing.
+      // Wait for the iframe document + fonts to settle before printing.
       await new Promise<void>((resolve) => {
         if (idoc.readyState === "complete") resolve();
         else iframe!.onload = () => resolve();
@@ -181,18 +182,19 @@ export default function Page() {
       }
       await new Promise((r) => setTimeout(r, 200));
 
-      const html2pdf = (await import("html2pdf.js")).default;
-      await html2pdf()
-        .set({
-          margin: [10, 8, 10, 8], // mm — mirrors the invoice's @page 10mm
-          filename,
-          image: { type: "jpeg", quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
-          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-          pagebreak: { mode: ["css", "legacy"] },
-        })
-        .from(idoc.body)
-        .save();
+      const win = iframe.contentWindow!;
+      const localIframe = iframe;
+      // Clean up the iframe once the print dialog closes (with a fallback in
+      // case onafterprint never fires, e.g. some Safari versions).
+      const cleanup = () => {
+        if (localIframe && localIframe.parentNode) localIframe.remove();
+      };
+      win.onafterprint = cleanup;
+      setTimeout(cleanup, 60000);
+
+      win.focus();
+      win.print();
+      iframe = null; // ownership handed to cleanup; don't remove in finally
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not generate the PDF");
     } finally {
@@ -450,7 +452,7 @@ export default function Page() {
               ← Start Over
             </button>
             <button onClick={downloadInvoice} className="btn btn-primary" disabled={generating}>
-              {generating ? "Generating…" : "Generate & Download PDF"}
+              {generating ? "Opening…" : "Generate PDF (Save as PDF)"}
             </button>
           </div>
         </div>
