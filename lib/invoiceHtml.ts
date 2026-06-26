@@ -37,18 +37,18 @@ export function buildInvoiceHtml(inv: Invoice): string {
   const totalQty = items.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
   const unit = items[0]?.unit || "Pcs";
 
-  // Summary rows inside the items table
+  // Summary rows inside the items table (rate goes in the Rate column, "%" in per)
   const summaryRows: Array<{ label: string; rate?: string; amount: number }> = [];
   if (isInter) {
-    summaryRows.push({ label: `IGST @ ${inv.igstRate || 0}%`, rate: `${inv.igstRate || 0} %`, amount: inv.igstAmount || 0 });
+    summaryRows.push({ label: `IGST @${inv.igstRate || 0}%`, rate: `${inv.igstRate || 0}`, amount: inv.igstAmount || 0 });
   } else {
     if ((inv.cgstRate || 0) > 0 || (inv.cgstAmount || 0) > 0) {
-      summaryRows.push({ label: `CGST @ ${inv.cgstRate || 0}%`, rate: `${inv.cgstRate || 0} %`, amount: inv.cgstAmount || 0 });
-      summaryRows.push({ label: `SGST @ ${inv.sgstRate || 0}%`, rate: `${inv.sgstRate || 0} %`, amount: inv.sgstAmount || 0 });
+      summaryRows.push({ label: `CGST @${inv.cgstRate || 0}%`, rate: `${inv.cgstRate || 0}`, amount: inv.cgstAmount || 0 });
+      summaryRows.push({ label: `SGST @${inv.sgstRate || 0}%`, rate: `${inv.sgstRate || 0}`, amount: inv.sgstAmount || 0 });
     }
   }
   if ((inv.cessRate || 0) > 0 || (inv.cessAmount || 0) > 0) {
-    summaryRows.push({ label: `CESS @ ${inv.cessRate || 0}%`, rate: `${inv.cessRate || 0} %`, amount: inv.cessAmount || 0 });
+    summaryRows.push({ label: `CESS @${inv.cessRate || 0}%`, rate: `${inv.cessRate || 0}`, amount: inv.cessAmount || 0 });
   }
   if (Math.abs(inv.roundOff || 0) > 0.001) {
     summaryRows.push({ label: "Round Off", amount: inv.roundOff || 0 });
@@ -79,8 +79,8 @@ export function buildInvoiceHtml(inv: Invoice): string {
         <td class="c-desc"><i><b>${esc(row.label)}</b></i></td>
         <td class="c-hsn"></td>
         <td class="c-qty"></td>
-        <td class="c-rate"></td>
-        <td class="c-per"><i><b>${esc(row.rate || "")}</b></i></td>
+        <td class="c-rate"><i><b>${esc(row.rate || "")}</b></i></td>
+        <td class="c-per"><i><b>${row.rate ? "%" : ""}</b></i></td>
         <td class="c-amt"><i><b>${inr(row.amount)}</b></i></td>
       </tr>`,
     )
@@ -211,8 +211,11 @@ export function buildInvoiceHtml(inv: Invoice): string {
   .items .c-per  { width: 50px;  text-align: center; }
   .items .c-amt  { width: 95px;  text-align: right; }
 
-  /* Tax/summary rows sit inside the items table, no top/bottom borders */
-  .summary-row td { border-top: 0; border-bottom: 0; padding: 2px 5px; }
+  /* Tax/summary rows sit inside the items table, no top/bottom borders so the
+     vertical column dividers run continuously down the page (Tally look). */
+  .summary-row td  { border-top: 0; border-bottom: 0; padding: 2px 5px; }
+  .subtotal-row td { border-top: 0; border-bottom: 0; padding: 2px 5px; text-align: right; }
+  .spacer-row td   { border-top: 0; border-bottom: 0; height: 150px; }
 
   /* Total row at the bottom */
   .total-row td {
@@ -246,7 +249,7 @@ export function buildInvoiceHtml(inv: Invoice): string {
   .tax-summary .lbl { text-align: right; font-weight: 700; }
   .tax-summary .ts-total td { font-weight: 700; }
 
-  .tax-words { padding: 5px 6px; border: 0.5pt solid #000; border-top: 0; font-size: 9pt; }
+  .tax-words { padding: 5px 6px 90px 6px; border: 0.5pt solid #000; border-top: 0; font-size: 9pt; }
   .tax-words b { font-size: 10pt; }
 
   .decl {
@@ -326,7 +329,25 @@ export function buildInvoiceHtml(inv: Invoice): string {
     </thead>
     <tbody>
       ${itemRows}
+      <tr class="subtotal-row">
+        <td class="c-sl"></td>
+        <td class="c-desc"></td>
+        <td class="c-hsn"></td>
+        <td class="c-qty"></td>
+        <td class="c-rate"></td>
+        <td class="c-per"></td>
+        <td class="c-amt">${inr(inv.taxableValue || 0)}</td>
+      </tr>
       ${summaryHtml}
+      <tr class="spacer-row">
+        <td class="c-sl"></td>
+        <td class="c-desc"></td>
+        <td class="c-hsn"></td>
+        <td class="c-qty"></td>
+        <td class="c-rate"></td>
+        <td class="c-per"></td>
+        <td class="c-amt"></td>
+      </tr>
       <tr class="total-row">
         <td class="c-sl"></td>
         <td class="c-desc">Total</td>
